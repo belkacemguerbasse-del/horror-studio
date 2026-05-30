@@ -1,0 +1,57 @@
+# ─── Node / Electron ─────────────────────────────────────
+node_modules/
+dist/
+release/
+*.log
+.DS_Store
+
+# ─── Python ──────────────────────────────────────────────
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ─── Heavy binaries that should NEVER be in git ──────────
+*.exe
+*.zip
+*.7z
+*.dmg
+
+# ─── Generated media (the whole point of the pipeline) ───
+projects/*/output/
+projects/*/voice/
+projects/*/frames/
+projects/*/_concat_work/
+projects/*/*_final.mp4
+*.mp4
+*.mp3
+*.wav
+*.mkv
+*.mov
+*.webm
+
+# ─── Raw images dropped at repo root by Banana ───────────
+Gemini_Generated_Image_*
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Keep only example/template assets if you want them tracked:
+!horror-studio/public/**/*.png
+!horror-studio/src/**/*.png
+
+# ─── Local config / secrets ──────────────────────────────
+.env
+.env.local
+horror-studio/.env
+
+# ─── Editor / IDE ────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*~
+
+# ─── Workflow file (huge, regenerate as needed) ──────────
+# Comment out the next line if you DO want to track it:
+# video_ltx2_3_i2v_api.json

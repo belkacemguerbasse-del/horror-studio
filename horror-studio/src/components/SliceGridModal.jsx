@@ -1,0 +1,198 @@
+import { useState, useRef, useEffect } from 'react';
+import { useStore } from '../lib/store.js';
+
+export default function SliceGridModal({ episodeId, onClose }) {
+  const refreshEpisodes = useStore(s => s.refreshEpisodes);
+  const selectEpisode = useStore(s => s.selectEpisode);
+
+  const [imgSrc, setImgSrc] = useState(null);
+  const [img, setImg] = useState(null);
+  const [cols, setCols] = useState(5);
+  const [rows, setRows] = useState(2);
+  const [padPct, setPadPct] = useState(1.5);
+  const [order, setOrder] = useState('row-major'); // row-major | col-major
+  const [importing, setImporting] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const canvasRef = useRef(null);
+
+  async function pick() {
+    setErr(null);
+    const files = await window.api.app.pickFiles({
+      properties: ['openFile'],
+      filters: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'webp'] }]
+    });
+    if (!files || !files[0]) return;
+    const dataUrl = await window.api.app.readFileAsDataUrl(files[0]);
+    if (!dataUrl) { setErr('Could not read the image file'); return; }
+    setImgSrc(dataUrl);
+  }
+
+  useEffect(() => {
+    if (!imgSrc) return;
+    const im = new Image();
+    im.onload = () => setImg(im);
+    im.onerror = () => setErr('Failed to decode image');
+    im.src = imgSrc;
+  }, [imgSrc]);
+
+  // Draw preview with grid overlay
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c || !img) return;
+    const ctx = c.getContext('2d');
+    const maxW = 900, maxH = 520;
+    const scale = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1);
+    c.width  = Math.round(img.naturalWidth * scale);
+    c.height = Math.round(img.naturalHeight * scale);
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+
+    const cellW = c.width / cols;
+    const cellH = c.height / rows;
+    const pad = (padPct / 100) * Math.min(cellW, cellH);
+
+    ctx.strokeStyle = 'rgba(185, 28, 28, 0.85)';
+    ctx.lineWidth = 2;
+    ctx.font = 'bold 14px monospace';
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+
+    let n = 1;
+    for (let r = 0; r < rows; r++) {
+      for (let cc = 0; cc < cols; cc++) {
+        const idx = order === 'col-major'
+          ? (cc * rows + r + 1)
+          : n;
+        const x = cc * cellW + pad;
+        const y = r * cellH + pad;
+        const w = cellW - 2 * pad;
+        const h = cellH - 2 * pad;
+        ctx.strokeRect(x, y, w, h);
+        ctx.fillRect(x, y, 28, 20);
+        ctx.fillStyle = 'rgb(229, 231, 235)';
+        ctx.fillText(String(idx).padStart(2, '0'), x + 4, y + 15);
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        n++;
+      }
+    }
+  }, [img, cols, rows, padPct, order]);
+
+  async function doImport() {
+    if (!img) return;
+    setErr(null); setImporting(true);
+    try {
+      const W = img.naturalWidth, H = img.naturalHeight;
+      const cellW = W / cols, cellH = H / rows;
+      const pad = (padPct / 100) * Math.min(cellW, cellH);
+
+      const indices = [];
+      for (let r = 0; r < rows; r++)
+        for (let cc = 0; cc < cols; cc++)
+          indices.push([r, cc]);
+
+      indices.sort((a, b) => {
+        if (order === 'col-major') {
+          const ai = a[1] * rows + a[0];
+          const bi = b[1] * rows + b[0];
+          return ai - bi;
+        }
+        return 0;
+      });
+
+      const slices = [];
+      for (const [r, cc] of indices) {
+        const sx = Math.round(cc * cellW + pad);
+        const sy = Math.round(r * cellH + pad);
+        const sw = Math.round(cellW - 2 * pad);
+        const sh = Math.round(cellH - 2 * pad);
+
+        const off = document.createElement('canvas');
+        off.width = sw; off.height = sh;
+        off.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+        slices.push(off.toDataURL('image/png'));
+      }
+
+      await window.api.episodes.importSlices(episodeId, slices);
+      await refreshEpisodes();
+      await selectEpisode(episodeId);
+      onClose();
+    } catch (e) {
+      setErr(e.message || String(e));
+    } finally { setImporting(false); }
+  }
+
+  const total = rows * cols;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-6" onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} className="card w-full max-w-5xl max-h-[92vh] overflow-y-auto p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-semibold">Slice storyboard grid</h2>
+            <p className="text-xs text-muted">Pick the grid image from Banana, adjust rows × cols and the inner border, then import.</p>
+          </div>
+          <button onClick={onClose} className="btn-ghost text-xl">✕</button>
+        </div>
+
+        {!imgSrc && (
+          <div className="border-2 border-dashed border-line rounded-md p-10 text-center">
+            <div className="text-4xl mb-3">🖼</div>
+            <div className="text-sm text-muted mb-4">Pick the grid image generated by Nano Banana 2.</div>
+            <button onClick={pick} className="btn-primary">Choose image</button>
+          </div>
+        )}
+
+        {imgSrc && (
+          <>
+            <div className="grid grid-cols-4 gap-3 mb-4">
+              <NumField label="Columns" value={cols} onChange={v => setCols(Math.max(1, v))} />
+              <NumField label="Rows"    value={rows} onChange={v => setRows(Math.max(1, v))} />
+              <div>
+                <label className="label">Inner border ({padPct.toFixed(1)}%)</label>
+                <input type="range" min={0} max={8} step={0.1} value={padPct}
+                  onChange={e => setPadPct(parseFloat(e.target.value))}
+                  className="w-full accent-blood mt-2" />
+              </div>
+              <div>
+                <label className="label">Order</label>
+                <select className="input mt-1" value={order} onChange={e => setOrder(e.target.value)}>
+                  <option value="row-major">Left→right, then top→bottom</option>
+                  <option value="col-major">Top→bottom, then left→right</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="bg-bg border border-line rounded-md p-2 flex items-center justify-center min-h-[300px]">
+              <canvas ref={canvasRef} className="max-w-full" />
+            </div>
+
+            {err && <div className="text-sm text-red-400 mt-3">{err}</div>}
+
+            <div className="flex items-center justify-between mt-4">
+              <div className="text-xs text-muted">
+                Will produce <span className="text-text font-semibold">{total}</span> slice{total>1?'s':''}
+                {total !== 10 && <span className="text-amber-400"> · pipeline expects 10</span>}
+              </div>
+              <div className="flex gap-2">
+                <button onClick={pick} className="btn">Pick another image</button>
+                <button onClick={doImport} disabled={importing} className="btn-primary disabled:opacity-50">
+                  {importing ? 'Importing…' : `Import ${total} slice${total>1?'s':''}`}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NumField({ label, value, onChange }) {
+  return (
+    <div>
+      <label className="label">{label}</label>
+      <input type="number" min={1} max={20} value={value} onChange={e => onChange(parseInt(e.target.value) || 1)}
+        className="input mt-1" />
+    </div>
+  );
+}
