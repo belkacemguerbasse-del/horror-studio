@@ -35,11 +35,95 @@ def tokenize(text: str) -> list[str]:
     return [t.strip(".-") for t in tokens if t.strip(".-") and t not in _STOPWORDS]
 
 
+# Synonymes anglais -> français (tokens normalisés) pour interroger une base
+# majoritairement francophone avec des termes anglais, et inversement.
+_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "turbojet": ("turboreacteur", "simple", "flux"),
+    "turbofan": ("turbosoufflante", "double", "flux"),
+    "turboprop": ("turbopropulseur",),
+    "ramjet": ("statoreacteur",),
+    "engine": ("moteur",),
+    "engines": ("moteur",),
+    "jet": ("reaction",),
+    "thrust": ("poussee",),
+    "specific": ("specifique",),
+    "fuel": ("carburant", "kerosene"),
+    "consumption": ("consommation",),
+    "sfc": ("tsfc", "consommation"),
+    "compressor": ("compresseur",),
+    "turbine": ("turbine",),
+    "combustor": ("chambre", "combustion"),
+    "combustion": ("combustion",),
+    "nozzle": ("tuyere",),
+    "afterburner": ("post-combustion", "rechauffe"),
+    "reheat": ("rechauffe", "post-combustion"),
+    "inlet": ("entree", "manche"),
+    "intake": ("entree", "manche"),
+    "fan": ("soufflante",),
+    "blade": ("aube",),
+    "blades": ("aube",),
+    "vane": ("aube", "stator"),
+    "efficiency": ("rendement",),
+    "pressure": ("pression",),
+    "ratio": ("taux", "rapport"),
+    "temperature": ("temperature",),
+    "surge": ("pompage",),
+    "stall": ("decrochage",),
+    "cooling": ("refroidissement",),
+    "material": ("materiau",),
+    "materials": ("materiaux",),
+    "creep": ("fluage",),
+    "fatigue": ("fatigue",),
+    "certification": ("certification",),
+    "bird": ("oiseaux",),
+    "ingestion": ("ingestion",),
+    "noise": ("bruit",),
+    "emissions": ("emissions", "nox"),
+    "altitude": ("altitude",),
+    "cruise": ("croisiere",),
+    "takeoff": ("decollage",),
+    "design": ("conception", "dimensionnement"),
+    "history": ("historique",),
+    "spool": ("corps",),
+    "bypass": ("dilution",),
+    "supersonic": ("supersonique",),
+    "missile": ("missiles",),
+    "glossary": ("glossaire",),
+    # français -> anglais (quelques termes anglais présents dans les fiches)
+    "turboreacteur": ("turbojet",),
+    "turbosoufflante": ("turbofan",),
+    "rechauffe": ("afterburner",),
+    "post-combustion": ("afterburner",),
+}
+
+
+def expand_query(tokens: list[str]) -> list[str]:
+    """Ajoute les synonymes bilingues aux termes de la requête (sans doublons)."""
+    out: list[str] = []
+    for t in tokens:
+        for term in (t, *_SYNONYMS.get(t, ())):
+            if term not in out:
+                out.append(term)
+    return out
+
+
+_GLOSSARY_WEIGHT = 0.5
+_TERMINOLOGY_HINTS = {
+    "glossaire", "glossary", "anglais", "english", "francais", "french", "terme", "termes",
+    "term", "terminology", "terminologie", "traduction", "traduire", "translate", "translation",
+    "dit-on", "appelle", "called", "signifie", "means", "acronyme", "acronym", "sigle",
+}
+
+
 @dataclass
 class Section:
     source: str
     title: str
     text: str
+
+    @property
+    def is_glossary(self) -> bool:
+        return "glossaire" in _normalize(self.source) or "glossary" in _normalize(self.source)
 
     def preview(self, limit: int = 1500) -> str:
         return self.text if len(self.text) <= limit else self.text[:limit] + " […]"
@@ -68,11 +152,15 @@ class KnowledgeBase:
 
     # ---- recherche -----------------------------------------------------------
     def search(self, query: str, top_k: int = 3) -> list[tuple[float, Section]]:
-        q = tokenize(query)
+        raw = tokenize(query)
+        q = expand_query(raw)
         if not q or not self.sections:
             return []
         n = len(self.sections)
         k1, b = 1.5, 0.75
+        # Le glossaire est dense en mots-clés et gagnerait toutes les requêtes :
+        # on le pondère sauf si la question porte sur la terminologie.
+        terminology_query = bool(set(raw) & _TERMINOLOGY_HINTS)
         scored: list[tuple[float, Section]] = []
         for section, tf in zip(self.sections, self._tf):
             dl = sum(tf.values())
@@ -84,6 +172,8 @@ class KnowledgeBase:
                 freq = tf[term]
                 score += idf * freq * (k1 + 1) / (freq + k1 * (1 - b + b * dl / self._avg_len))
             if score > 0:
+                if section.is_glossary and not terminology_query:
+                    score *= _GLOSSARY_WEIGHT
                 scored.append((score, section))
         scored.sort(key=lambda x: -x[0])
         return scored[:top_k]

@@ -23,14 +23,18 @@ def analyser_cycle_turboreacteur(
     recouvrement_entree: float = 0.97,
     perte_pression_chambre: float = 0.04,
     debit_air_kg_s: float | None = None,
+    temperature_rechauffe_K: float | None = None,
+    type_tuyere: str = "convergent",
 ) -> str:
-    """Analyse de cycle paramétrique d'un turboréacteur simple flux à tuyère convergente.
+    """Analyse de cycle paramétrique d'un turboréacteur simple flux (turbojet), avec ou sans post-combustion.
 
-    Calcule les températures et pressions totales à chaque station (2, 3, 4, 5),
-    la richesse, la vitesse d'éjection, la poussée spécifique, la consommation
-    spécifique (TSFC) et les rendements thermique, propulsif et global, pour un
-    point de vol donné (atmosphère ISA). Utiliser cet outil pour TOUT calcul de
-    performance plutôt que d'estimer les chiffres de tête.
+    Calcule les températures et pressions totales à chaque station (2, 3, 4, 5, 7),
+    la richesse (chambre, réchauffe, totale), la vitesse d'éjection, la poussée
+    spécifique, la consommation spécifique (TSFC) et les rendements thermique,
+    propulsif et global, pour un point de vol donné (atmosphère ISA). Utiliser cet
+    outil pour TOUT calcul de performance plutôt que d'estimer les chiffres de tête.
+    Pour comparer sec / réchauffe ou convergent / convergent-divergent, appeler
+    l'outil plusieurs fois avec les mêmes paramètres de base.
 
     Args:
         mach: Nombre de Mach de vol (0 = point fixe).
@@ -42,6 +46,8 @@ def analyser_cycle_turboreacteur(
         recouvrement_entree: Recouvrement de pression totale de l'entrée d'air (0,90-0,99).
         perte_pression_chambre: Perte relative de pression dans la chambre (0,03-0,06).
         debit_air_kg_s: Débit d'air en kg/s ; si fourni, la poussée et le débit carburant absolus sont calculés.
+        temperature_rechauffe_K: Température totale de post-combustion Tt7 en kelvins (1 800-2 200 K typiques) ; None = réchauffe éteinte.
+        type_tuyere: "convergent" (défaut, sous-détendue si NPR > 1,85) ou "convergent_divergent" (détente complète, géométrie variable).
     """
     try:
         res = analyze_turbojet(TurbojetInputs(
@@ -54,6 +60,8 @@ def analyser_cycle_turboreacteur(
             eta_inlet=recouvrement_entree,
             combustor_pressure_loss=perte_pression_chambre,
             mass_flow_kg_s=debit_air_kg_s,
+            afterburner_temp_K=temperature_rechauffe_K,
+            nozzle_type=type_tuyere,
         ))
     except ValueError as exc:
         return json.dumps({"erreur": str(exc)}, ensure_ascii=False)

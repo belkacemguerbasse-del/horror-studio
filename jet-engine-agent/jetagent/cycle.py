@@ -83,6 +83,13 @@ class TurbojetInputs:
     eta_mechanical: float = 0.99          # rendement de transmission compresseur-turbine
     eta_nozzle: float = 0.98              # coefficient de vitesse de la tuyère
     mass_flow_kg_s: float | None = None   # débit d'air ; si None, résultats par kg/s
+    # Post-combustion (réchauffe) : None = éteinte ; sinon température totale visée (Tt7)
+    afterburner_temp_K: float | None = None
+    eta_afterburner: float = 0.95         # rendement de combustion du canal de réchauffe
+    afterburner_pressure_loss: float = 0.05  # perte relative de pression (allumée)
+    # "convergent" (amorcée au-delà du NPR critique) ou "convergent_divergent"
+    # (détente complète jusqu'à P0, géométrie variable supposée adaptée)
+    nozzle_type: str = "convergent"
 
 
 @dataclass
@@ -100,9 +107,15 @@ class TurbojetResults:
     Pt4_Pa: float
     Tt5_K: float
     Pt5_Pa: float
+    Tt7_K: float
+    Pt7_Pa: float
     # Combustion
-    fuel_air_ratio: float
+    fuel_air_ratio: float               # chambre principale
+    afterburner_fuel_air_ratio: float   # réchauffe (0 si éteinte)
+    total_fuel_air_ratio: float
+    afterburner_on: bool
     # Tuyère
+    nozzle_type: str
     nozzle_pressure_ratio: float
     nozzle_choked: bool
     exhaust_velocity_m_s: float
@@ -128,9 +141,11 @@ def analyze_turbojet(inp: TurbojetInputs) -> TurbojetResults:
 
     Méthode : analyse de cycle « réel » au sens de Mattingly (Elements of
     Propulsion), avec rendements composants et propriétés distinctes
-    air froid / gaz chauds. Tuyère convergente : si le rapport de pression
-    disponible dépasse le rapport critique, la tuyère est amorcée (Mach 1 en
-    sortie) et la poussée de pression est ajoutée.
+    air froid / gaz chauds. Post-combustion optionnelle (station 5 -> 7).
+    Tuyère convergente : si le rapport de pression disponible dépasse le
+    rapport critique, la tuyère est amorcée (Mach 1 en sortie) et la poussée
+    de pression est ajoutée. Tuyère convergente-divergente : détente complète
+    jusqu'à la pression ambiante (section de sortie supposée adaptée).
     """
     warnings: list[str] = []
     _validate(inp, warnings)
@@ -172,20 +187,44 @@ def analyze_turbojet(inp: TurbojetInputs) -> TurbojetResults:
     pi_t = tau_t_ideal ** (GAMMA_T / (GAMMA_T - 1))
     Pt5 = Pt4 * pi_t
 
-    # Station 5 -> 9 : tuyère convergente
-    npr = Pt5 / P0
+    # Station 5 -> 7 : post-combustion (réchauffe) éventuelle
+    if inp.afterburner_temp_K is not None:
+        Tt7 = inp.afterburner_temp_K
+        if Tt7 <= Tt5:
+            raise ValueError(
+                f"la température de réchauffe ({Tt7:.0f} K) doit dépasser la température "
+                f"de sortie turbine T5 ({Tt5:.0f} K)."
+            )
+        f_ab = (1 + f) * CP_T * (Tt7 - Tt5) / (inp.eta_afterburner * LHV_JET_A1 - CP_T * Tt7)
+        Pt7 = Pt5 * (1 - inp.afterburner_pressure_loss)
+        afterburner_on = True
+    else:
+        Tt7, Pt7, f_ab, afterburner_on = Tt5, Pt5, 0.0, False
+    f_total = f + f_ab
+
+    # Station 7 -> 9 : tuyère
+    npr = Pt7 / P0
     critical_pr = ((GAMMA_T + 1) / 2) ** (GAMMA_T / (GAMMA_T - 1))
     if npr < 1.0:
         raise ValueError(
-            "pression totale en sortie turbine inférieure à la pression ambiante : "
+            "pression totale en entrée de tuyère inférieure à la pression ambiante : "
             "le cycle ne produit pas de poussée (T4 trop basse ou rendements trop faibles)."
         )
 
-    if npr > critical_pr:
+    if inp.nozzle_type == "convergent_divergent":
+        # Détente complète : P9 = P0, section de sortie adaptée (pas de poussée de pression)
+        choked = npr > critical_pr
+        P9 = P0
+        T9 = Tt7 * (P9 / Pt7) ** ((GAMMA_T - 1) / GAMMA_T)
+        V9_ideal = math.sqrt(max(2 * CP_T * (Tt7 - T9), 0.0))
+        V9 = inp.eta_nozzle * V9_ideal
+        M9 = V9 / math.sqrt(GAMMA_T * R_AIR * T9) if T9 > 0 else 0.0
+        pressure_thrust = 0.0
+    elif npr > critical_pr:
         choked = True
         M9 = 1.0
-        T9 = Tt5 * 2 / (GAMMA_T + 1)
-        P9 = Pt5 / critical_pr
+        T9 = Tt7 * 2 / (GAMMA_T + 1)
+        P9 = Pt7 / critical_pr
         V9_ideal = math.sqrt(GAMMA_T * R_AIR * T9)
         V9 = inp.eta_nozzle * V9_ideal
         # Poussée de pression par unité de débit : (P9 - P0) * A9 / mdot9
@@ -195,23 +234,23 @@ def analyze_turbojet(inp: TurbojetInputs) -> TurbojetResults:
     else:
         choked = False
         P9 = P0
-        T9 = Tt5 * (P9 / Pt5) ** ((GAMMA_T - 1) / GAMMA_T)
-        V9_ideal = math.sqrt(max(2 * CP_T * (Tt5 - T9), 0.0))
+        T9 = Tt7 * (P9 / Pt7) ** ((GAMMA_T - 1) / GAMMA_T)
+        V9_ideal = math.sqrt(max(2 * CP_T * (Tt7 - T9), 0.0))
         V9 = inp.eta_nozzle * V9_ideal
         M9 = V9 / math.sqrt(GAMMA_T * R_AIR * T9) if T9 > 0 else 0.0
         pressure_thrust = 0.0
 
     # Performances
-    specific_thrust = (1 + f) * V9 - V0 + pressure_thrust  # N par kg/s d'air
+    specific_thrust = (1 + f_total) * V9 - V0 + pressure_thrust  # N par kg/s d'air
     if specific_thrust <= 0:
         raise ValueError("poussée spécifique nulle ou négative : point de fonctionnement non viable")
-    tsfc = f / specific_thrust * 3600  # kg/(N.h)
+    tsfc = f_total / specific_thrust * 3600  # kg/(N.h)
 
     # Vitesse d'éjection « effective » (équivalent détente complète) : la poussée
     # de pression d'une tuyère amorcée est convertie en quantité de mouvement.
-    V9_eff = V9 + pressure_thrust / (1 + f)
-    kinetic_power = 0.5 * ((1 + f) * V9_eff**2 - V0**2)
-    fuel_power = f * LHV_JET_A1
+    V9_eff = V9 + pressure_thrust / (1 + f_total)
+    kinetic_power = 0.5 * ((1 + f_total) * V9_eff**2 - V0**2)
+    fuel_power = f_total * LHV_JET_A1
     thermal_eff = kinetic_power / fuel_power if fuel_power > 0 else 0.0
     propulsive_eff = (specific_thrust * V0) / kinetic_power if kinetic_power > 0 and V0 > 0 else 0.0
     overall_eff = thermal_eff * propulsive_eff
@@ -219,15 +258,17 @@ def analyze_turbojet(inp: TurbojetInputs) -> TurbojetResults:
     thrust = fuel_flow = None
     if inp.mass_flow_kg_s is not None:
         thrust = specific_thrust * inp.mass_flow_kg_s
-        fuel_flow = f * inp.mass_flow_kg_s
+        fuel_flow = f_total * inp.mass_flow_kg_s
 
-    _post_warnings(inp, Tt3, Tt5, f, warnings)
+    _post_warnings(inp, Tt3, Tt5, f, f_total, npr, warnings)
 
     return TurbojetResults(
         T0_K=T0, P0_Pa=P0, V0_m_s=V0,
         Tt2_K=Tt2, Pt2_Pa=Pt2, Tt3_K=Tt3, Pt3_Pa=Pt3,
-        Tt4_K=Tt4, Pt4_Pa=Pt4, Tt5_K=Tt5, Pt5_Pa=Pt5,
-        fuel_air_ratio=f,
+        Tt4_K=Tt4, Pt4_Pa=Pt4, Tt5_K=Tt5, Pt5_Pa=Pt5, Tt7_K=Tt7, Pt7_Pa=Pt7,
+        fuel_air_ratio=f, afterburner_fuel_air_ratio=f_ab, total_fuel_air_ratio=f_total,
+        afterburner_on=afterburner_on,
+        nozzle_type=inp.nozzle_type,
         nozzle_pressure_ratio=npr, nozzle_choked=choked,
         exhaust_velocity_m_s=V9, exhaust_temp_K=T9, exhaust_mach=M9,
         specific_thrust_N_per_kg_s=specific_thrust,
@@ -256,11 +297,21 @@ def _validate(inp: TurbojetInputs, warnings: list[str]) -> None:
         raise ValueError("la perte de pression chambre doit être dans [0, 0.5[")
     if inp.mass_flow_kg_s is not None and inp.mass_flow_kg_s <= 0:
         raise ValueError("le débit d'air doit être strictement positif")
+    if inp.nozzle_type not in ("convergent", "convergent_divergent"):
+        raise ValueError("nozzle_type doit être 'convergent' ou 'convergent_divergent'")
+    if inp.afterburner_temp_K is not None:
+        if not 0 < inp.eta_afterburner <= 1:
+            raise ValueError("eta_afterburner doit être dans ]0, 1]")
+        if not 0 <= inp.afterburner_pressure_loss < 0.5:
+            raise ValueError("la perte de pression de réchauffe doit être dans [0, 0.5[")
+        if inp.afterburner_temp_K > 2300:
+            raise ValueError("température de réchauffe > 2300 K : au-delà de la stoechiométrie du kérosène")
     if inp.mach > 3.5:
         warnings.append("Mach > 3.5 : un turboréacteur classique n'est plus adapté (statoréacteur recommandé).")
 
 
-def _post_warnings(inp: TurbojetInputs, Tt3: float, Tt5: float, f: float, warnings: list[str]) -> None:
+def _post_warnings(inp: TurbojetInputs, Tt3: float, Tt5: float, f: float, f_total: float,
+                   npr: float, warnings: list[str]) -> None:
     if inp.turbine_inlet_temp_K > 1750:
         warnings.append(
             "T4 > 1750 K : nécessite aubes monocristallines refroidies + revêtement barrière thermique (TBC)."
@@ -276,3 +327,14 @@ def _post_warnings(inp: TurbojetInputs, Tt3: float, Tt5: float, f: float, warnin
         warnings.append("Richesse élevée (f > 0,045) : risque de dépassement stoechiométrique local / NOx élevés.")
     if inp.pressure_ratio > 45:
         warnings.append("OPR > 45 : nécessite une architecture multi-corps et un refroidissement HP conséquent.")
+    if f_total > 0.060:
+        warnings.append("Richesse totale > 0,060 : proche de la stoechiométrie (0,068), rendement de réchauffe dégradé.")
+    if inp.afterburner_temp_K is not None and inp.afterburner_temp_K > 2100:
+        warnings.append("Réchauffe > 2100 K : refroidissement du canal et de la tuyère par film obligatoire.")
+    if inp.nozzle_type == "convergent" and npr > 4.0:
+        warnings.append(
+            f"NPR = {npr:.1f} avec tuyère convergente : la sous-détente coûte plusieurs % de poussée, "
+            "une tuyère convergente-divergente à géométrie variable est recommandée."
+        )
+    if inp.nozzle_type == "convergent_divergent" and npr < 2.5:
+        warnings.append("NPR < 2,5 avec tuyère C-D : gain négligeable, une tuyère convergente simple suffit.")
