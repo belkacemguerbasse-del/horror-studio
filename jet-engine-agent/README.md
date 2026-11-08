@@ -26,6 +26,7 @@ jet-engine-agent/
 │   ├── agent.py       # boucle Claude + outils, garde-fous de périmètre, CLI
 │   ├── tools.py       # outils exposés au modèle (@beta_tool)
 │   ├── cli_tools.py   # mêmes outils en ligne de commande, sans modèle ni clé
+│   ├── cad/           # modèle 3D paramétrique (CadQuery) + visionneuse HTML
 │   ├── cycle.py       # analyse de cycle turboréacteur (déterministe, testée)
 │   └── knowledge.py   # recherche BM25 bilingue dans knowledge/*.md
 ├── knowledge/         # base documentaire (Markdown, extensible)
@@ -90,6 +91,22 @@ python -m jetagent.cli_tools doc "turbojet afterburner TSFC"
 python -m jetagent.cli_tools isa 11000
 python -m jetagent.cli_tools convert 10000 lbf kN
 ```
+
+## Modèle 3D paramétrique (CadQuery)
+
+```bash
+pip install cadquery
+python -m jetagent.cad --poussee 350 --out sorties/micro_turbojet_350N
+python -m jetagent.cad --poussee 350 --cotes-seules      # cotes sans construire la CAO
+```
+
+Produit un micro-turboréacteur dimensionné à partir du cycle (débit, section de
+sortie) : `*.step` (assemblage, pièces nommées), `*.stl` (complet et par
+pièce dans `pieces/`), vues au trait `*_coupe.svg` et `*_exterieur.svg`,
+`*_cotes.json`, et une visionneuse 3D autonome `*_visionneuse.html`
+(three.js, vue extérieure et demi-coupe, pièces masquables). Modèle
+d'implantation : enveloppes, sections et nombres d'aubes dimensionnés, aubes
+en plaques simplifiées. Le dossier `sorties/` est ignoré par git.
 
 ## Tests (sans clé API)
 

@@ -38,7 +38,16 @@ python -m jetagent.cli_tools doc "afterburner turbojet TSFC" -n 3
 
 # Conversions d'unités
 python -m jetagent.cli_tools convert 10000 lbf kN
+
+# Modèle 3D paramétrique d'un micro-turboréacteur (STEP, STL, vues SVG, visionneuse HTML)
+python -m jetagent.cad --poussee 350 --out sorties/micro_turbojet_350N
+python -m jetagent.cad --poussee 350 --cotes-seules
 ```
+
+Pour une demande de modèle 3D : lancer `python -m jetagent.cad`, publier la
+visionneuse HTML comme artifact pour que l'utilisateur la manipule, et joindre
+STEP, STL et la vue en coupe. Rappeler qu'il s'agit d'un modèle d'implantation
+(aubes simplifiées), pas d'une définition aérodynamique.
 
 Les commandes s'exécutent avec `cd jet-engine-agent &&` devant si le
 répertoire courant est la racine du dépôt. Aucune dépendance réseau : seule la
